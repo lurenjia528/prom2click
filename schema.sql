@@ -1,4 +1,4 @@
-# note: replace {shard} and {replica} and run on each server
+-- note: replace {shard} and {replica} and run on each server
 DROP TABLE IF EXISTS metrics.samples;
 CREATE TABLE IF NOT EXISTS metrics.samples
  (

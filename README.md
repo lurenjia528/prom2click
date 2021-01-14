@@ -1,5 +1,9 @@
 # prom2click
 
+#### 修改为 `go mod` 包管理
+#### 添加 `vendor`
+#### 添加日志打印
+
 Prom2click is a Prometheus remote storage adapter for [Clickhouse](https://clickhouse.yandex/). This project is in the early stages, beta testers are welcome :). Consider it experimental - that said it is quite promising as a scalable and highly available remote storage for Prometheus.
 
 It's functional and writing metrics into Clickhouse in configurable batch sizes. Note that (currently) it is cpu hungry so you'll need a decent number of cores to sustain higher ingestion rates (eg. > hundreds of thousands/second). Also, it is missing some bits like doco, proper logging, tests and database error handling.

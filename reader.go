@@ -5,22 +5,27 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/kshvakov/clickhouse"
 	"strings"
 
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/storage/remote"
+	"go.uber.org/zap"
 )
 
+var readerContent = []interface{}{"component", "reader"}
+
 type p2cReader struct {
-	conf *config
-	db   *sql.DB
+	conf   *config
+	db     *sql.DB
+	logger *zap.SugaredLogger
 }
 
 // getTimePeriod return select and where SQL chunks relating to the time period -or- error
 func (r *p2cReader) getTimePeriod(query *remote.Query) (string, string, error) {
 
 	var tselSQL = "SELECT COUNT() AS CNT, (intDiv(toUInt32(ts), %d) * %d) * 1000 as t"
-	var twhereSQL = "WHERE date >= toDate(%d) AND ts >= toDateTime(%d) AND ts <= toDateTime(%d)"
+	var twhereSQL = "WHERE date >= toDate(%d) AND ts >= toDateTime(%d) AND ts <= toDateTime(%d) AND date <= toDate(%d)"
 	var err error
 	tstart := query.StartTimestampMs / 1000
 	tend := query.EndTimestampMs / 1000
@@ -45,7 +50,7 @@ func (r *p2cReader) getTimePeriod(query *remote.Query) (string, string, error) {
 	}
 
 	selectSQL := fmt.Sprintf(tselSQL, taggr, taggr)
-	whereSQL := fmt.Sprintf(twhereSQL, tstart, tstart, tend)
+	whereSQL := fmt.Sprintf(twhereSQL, tstart, tstart, tend, tend)
 
 	return selectSQL, whereSQL, nil
 }
@@ -152,16 +157,25 @@ func (r *p2cReader) getSQL(query *remote.Query) (string, error) {
 	return sql, nil
 }
 
-func NewP2CReader(conf *config) (*p2cReader, error) {
+//func NewP2CReader(conf *config) (*p2cReader, error) {
+func NewP2CReader(conf *config, sugar *zap.SugaredLogger) (*p2cReader, error) {
 	var err error
 	r := new(p2cReader)
 	r.conf = conf
+	r.logger = sugar
 	r.db, err = sql.Open("clickhouse", r.conf.ChDSN)
 	if err != nil {
-		fmt.Printf("Error connecting to clickhouse: %s\n", err.Error())
+		//fmt.Printf("Error connecting to clickhouse: %s\n", err.Error())
+		r.logger.With(readerContent...).Errorf("connecting to clickhouse: %s", err.Error())
 		return r, err
 	}
-
+	if err := r.db.Ping(); err != nil {
+		if exception, ok := err.(*clickhouse.Exception); ok {
+			r.logger.With(readerContent...).Errorf("[%d] %s \n%s\n", exception.Code, exception.Message, exception.StackTrace)
+		} else {
+			r.logger.With(readerContent...).Error(err.Error())
+		}
+	}
 	return r, nil
 }
 
@@ -182,27 +196,33 @@ func (r *p2cReader) Read(req *remote.ReadRequest) (*remote.ReadResponse, error) 
 	rcount := 0
 	for _, q := range req.Queries {
 		// remove me..
-		fmt.Printf("\nquery: start: %d, end: %d\n\n", q.StartTimestampMs, q.EndTimestampMs)
+		//fmt.Printf("\nquery: start: %d, end: %d\n\n", q.StartTimestampMs, q.EndTimestampMs)
+		r.logger.With(readerContent...).Debug("\nquery: start: %d, end: %d", q.StartTimestampMs, q.EndTimestampMs)
 
 		// get the select sql
 		sqlStr, err = r.getSQL(q)
-		fmt.Printf("query: running sql: %s\n\n", sqlStr)
+		//fmt.Printf("query: running sql: %s\n\n", sqlStr)
+		r.logger.With(readerContent...).Debug("query: running sql: %s", sqlStr)
 		if err != nil {
-			fmt.Printf("Error: reader: getSQL: %s\n", err.Error())
+			//fmt.Printf("Error: reader: getSQL: %s\n", err.Error())
+			r.logger.With(readerContent...).Errorf("reader: getSQL: %s", err.Error())
 			return &resp, err
 		}
 
 		// get the select sql
 		if err != nil {
-			fmt.Printf("Error: reader: getSQL: %s\n", err.Error())
+			//fmt.Printf("Error: reader: getSQL: %s\n", err.Error())
+			r.logger.With(readerContent...).Errorf("reader: getSQL: %s", err.Error())
 			return &resp, err
 		}
 
 		// todo: metrics on number of errors, rows, selects, timings, etc
 		rows, err = r.db.Query(sqlStr)
 		if err != nil {
-			fmt.Printf("Error: query failed: %s", sqlStr)
-			fmt.Printf("Error: query error: %s\n", err)
+			//fmt.Printf("Error: query failed: %s", sqlStr)
+			//fmt.Printf("Error: query error: %s\n", err)
+			r.logger.With(readerContent...).Errorf("query failed: %s", sqlStr)
+			r.logger.With(readerContent...).Errorf("query error: %s", err)
 			return &resp, err
 		}
 
@@ -218,7 +238,8 @@ func (r *p2cReader) Read(req *remote.ReadRequest) (*remote.ReadResponse, error) 
 				value float64
 			)
 			if err = rows.Scan(&cnt, &t, &name, &tags, &value); err != nil {
-				fmt.Printf("Error: scan: %s\n", err.Error())
+				//fmt.Printf("Error: scan: %s\n", err.Error())
+				r.logger.With(readerContent...).Errorf("scan: %s", err.Error())
 			}
 			// remove this..
 			//fmt.Printf(fmt.Sprintf("%d,%d,%s,%s,%f\n", cnt, t, name, strings.Join(tags, ":"), value))
@@ -244,7 +265,8 @@ func (r *p2cReader) Read(req *remote.ReadRequest) (*remote.ReadResponse, error) 
 		resp.Results[0].Timeseries = append(resp.Results[0].Timeseries, ts)
 	}
 
-	fmt.Printf("query: returning %d rows for %d queries\n", rcount, len(req.Queries))
+	//fmt.Printf("query: returning %d rows for %d queries\n", rcount, len(req.Queries))
+	r.logger.With(readerContent...).Debug("query: returning %d rows for %d queries", rcount, len(req.Queries))
 
 	return &resp, nil
 
